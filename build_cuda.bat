@@ -14,12 +14,13 @@ if "%VCVARS%"=="" (
     exit /b 1
 )
 call "%VCVARS%" x64
-echo Compiling Sovereign_Fractal_Core.cpp...
-cl.exe /std:c++17 /EHsc /O2 Sovereign_Fractal_Core.cpp
+echo Building Sovereign GPU Architecture Matrix...
+nvcc Sovereign_Final_Architecture.cu -o Sovereign_CUDA.exe -O3 -allow-unsupported-compiler -std=c++17
 if %errorlevel% neq 0 (
     echo Compilation failed.
     exit /b %errorlevel%
 )
+echo Build Completed.
 echo.
-echo === RUNNING PHASE 14 FRACTAL ===
-Sovereign_Fractal_Core.exe
+echo === RUNNING PHASE 16 CUDA NATIVE ===
+Sovereign_CUDA.exe
