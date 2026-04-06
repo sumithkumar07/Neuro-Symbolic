@@ -20,8 +20,8 @@ using HDVector = std::vector<int>;
 }
 
 // ==========================================
-// SOVEREIGN PRODUCTION CORE (v4.8)
-// SCALE: 7B-READY | HARDENED | EFFICIENT
+// SOVEREIGN UNIFIED CORE (v5.2)
+// SCALE: 7B-READY | MEMORY: BAYESIAN-PURE
 // ==========================================
 
 __device__ inline float unpack_ternary(uint32_t packed, int sub_idx) {
@@ -45,31 +45,58 @@ __global__ void kernel_pack_ternary_fast(const float* latent, uint32_t* packed, 
     }
 }
 
+__global__ void kernel_pack_from_prob_fast(const uint8_t* ppos, const uint8_t* pneg, uint32_t* packed, int num_words, int total_sz) {
+    int word_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (word_idx < num_words) {
+        uint32_t word = 0;
+        for (int sub = 0; sub < 16; sub++) {
+            int idx = word_idx * 16 + sub;
+            if (idx < total_sz) {
+                float pp = ppos[idx] / 255.0f; float pn = pneg[idx] / 255.0f;
+                uint32_t bits = (pp > pn && pp > (1.0f - pp - pn)) ? 1 : ((pn > pp && pn > (1.0f - pp - pn)) ? 2 : 0);
+                word |= (bits << (sub * 2));
+            }
+        }
+        packed[word_idx] = word;
+    }
+}
+
 // Specialized DFA: Projects error into a hidden projection vector for biases/gates
-__global__ void kernel_dfa_projection(const float* B, const float* E, float* PROJ, int vs, int hs) {
+__global__ void kernel_dfa_projection_packed(const uint32_t* Bp, const float* E, float* PROJ, int vs, int hs) {
     int j = blockIdx.x * blockDim.x + threadIdx.x;
     if (j < hs) {
-        float p = 0; for(int k=0; k<vs; k++) p += B[j * vs + k] * E[k];
+        float p = 0; for(int k=0; k<vs; k++) {
+            int idx = j * vs + k;
+            p += unpack_ternary(Bp[idx / 16], idx % 16) * E[k];
+        }
         PROJ[j] = p;
     }
 }
 
-__global__ void kernel_vectorized_dfa_update_dual(float* W1, float* W2, const float* X, const float* PROJ, const float* H, int in_s, int hs, float lr, float clip) {
-    int i = blockIdx.y; int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (j < hs && i < in_s) {
-        float delta = PROJ[j] * (1.1f - H[j] * H[j]);
-        if (delta > clip) delta = clip; else if (delta < -clip) delta = -clip;
-        W1[i * hs + j] -= lr * delta * X[i];
-        W2[i * hs + j] -= lr * delta * (X[i] * X[i]);
+__global__ void kernel_prob_dfa_update_parallel_dual(uint8_t* ppos1, uint8_t* pneg1, uint8_t* ppos2, uint8_t* pneg2, const float* X, const float* PROJ, const float* H, int vs, int hs, float lr, float clip) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x; int i = blockIdx.y;
+    if (j < vs && i < hs) {
+        float delta = PROJ[i] * (1.1f - H[i] * H[i]) * X[j]; if (delta > clip) delta = clip; else if (delta < -clip) delta = -clip;
+        uint8_t* pp_ptrs[2] = {&ppos1[j*hs+i], &ppos2[j*hs+i]}; uint8_t* pn_ptrs[2] = {&pneg1[j*hs+i], &pneg2[j*hs+i]};
+        for(int k=0; k<2; k++) {
+            float pp = *(pp_ptrs[k]) / 255.0f; float pn = *(pn_ptrs[k]) / 255.0f;
+            if (delta > 0) { pp = fminf(1.0f, pp + lr * delta); pn = fmaxf(0.0f, pn - lr * delta * 0.5f); }
+            else { pn = fminf(1.0f, pn + lr * fabsf(delta)); pp = fmaxf(0.0f, pp - lr * fabsf(delta) * 0.5f); }
+            if (pp + pn > 1.0f) { float s = pp + pn; pp /= s; pn /= s; }
+            *(pp_ptrs[k]) = (uint8_t)(pp * 255.0f); *(pn_ptrs[k]) = (uint8_t)(pn * 255.0f);
+        }
     }
 }
 
-__global__ void kernel_vectorized_dfa_update_single(float* W1, const float* X, const float* PROJ, const float* H, int in_s, int hs, float lr, float clip) {
-    int i = blockIdx.y; int j = blockIdx.x * blockDim.x + threadIdx.x;
-    if (j < hs && i < in_s) {
-        float delta = PROJ[j] * (1.1f - H[j] * H[j]);
-        if (delta > clip) delta = clip; else if (delta < -clip) delta = -clip;
-        W1[i * hs + j] -= lr * delta * X[i];
+__global__ void kernel_prob_dfa_update_parallel_single(uint8_t* ppos, uint8_t* pneg, const float* X, const float* PROJ, const float* H, int dim, int hs, float lr, float clip) {
+    int j = blockIdx.x * blockDim.x + threadIdx.x; int i = blockIdx.y;
+    if (j < dim && i < hs) {
+        float delta = PROJ[i] * (1.1f - H[i] * H[i]) * X[j]; if (delta > clip) delta = clip; else if (delta < -clip) delta = -clip;
+        float pp = ppos[j*hs+i] / 255.0f; float pn = pneg[j*hs+i] / 255.0f;
+        if (delta > 0) { pp = fminf(1.0f, pp + lr * delta); pn = fmaxf(0.0f, pn - lr * delta * 0.5f); }
+        else { pn = fminf(1.0f, pn + lr * fabsf(delta)); pp = fmaxf(0.0f, pp - lr * fabsf(delta) * 0.5f); }
+        if (pp + pn > 1.0f) { float s = pp + pn; pp /= s; pn /= s; }
+        ppos[j*hs+i] = (uint8_t)(pp * 255.0f); pneg[j*hs+i] = (uint8_t)(pn * 255.0f);
     }
 }
 
@@ -82,15 +109,19 @@ __global__ void kernel_bias_dfa_update(float* B_lat, const float* PROJ, const fl
     }
 }
 
-__global__ void kernel_output_dfa_update_parallel(float* Why, float* by, const float* H, const float* E, int hs, int vs, float lr, float clip) {
+__global__ void kernel_prob_output_dfa_update(uint8_t* ppos, uint8_t* pneg, float* by, const float* H, const float* E, int hs, int vs, float lr, float clip) {
     int j = blockIdx.x * blockDim.x + threadIdx.x; int i = blockIdx.y;
     if (j < vs && i < hs) {
-        if (i == 0) { // Single thread per vocab entry handles bias
+        if (i == 0) {
             float de = E[j]; if (de > clip) de = clip; else if (de < -clip) de = -clip;
             by[j] -= lr * de;
         }
         float dw = E[j] * H[i]; if (dw > clip) dw = clip; else if (dw < -clip) dw = -clip;
-        Why[i * vs + j] -= lr * dw;
+        float pp = ppos[i*vs+j] / 255.0f; float pn = pneg[i*vs+j] / 255.0f; // Note index remains match for Why layout
+        if (dw > 0) { pp = fminf(1.0f, pp + lr * dw); pn = fmaxf(0.0f, pn - lr * dw * 0.5f); }
+        else { pn = fminf(1.0f, pn + lr * fabsf(dw)); pp = fmaxf(0.0f, pp - lr * fabsf(dw) * 0.5f); }
+        if (pp + pn > 1.0f) { float s = pp+pn; pp/=s; pn/=s; }
+        ppos[i*vs+j] = (uint8_t)(pp * 255.0f); pneg[i*vs+j] = (uint8_t)(pn * 255.0f);
     }
 }
 
@@ -183,87 +214,92 @@ __global__ void kernel_poly_hdc_tiled_packed(const float* e, const uint32_t* Wp,
     }
 }
 
+struct CUDABuffer {
+    int sz; float* d; std::vector<float> h;
+    CUDABuffer(int s) : sz(s), h(s, 0.0f) { cudaMalloc(&d, sz*sizeof(float)); cudaMemset(d, 0, sz*sizeof(float)); }
+    ~CUDABuffer() { if(d) cudaFree(d); }
+    void to_device() { cudaMemcpy(d, h.data(), sz*sizeof(float), cudaMemcpyHostToDevice); }
+    void to_host() { cudaMemcpy(h.data(), d, sz*sizeof(float), cudaMemcpyDeviceToHost); }
+};
+
 struct CUDAMatrix {
-    int r, c, sz, nw; float* d; uint32_t* dp; std::vector<float> h; bool dirty;
-    CUDAMatrix(int rows, int cols) : r(rows), c(cols), sz(rows*cols), nw((rows*cols+15)/16), h(rows*cols, 0.0f), dirty(true) {
-        cudaMalloc(&d, sz*sizeof(float)); cudaMemset(d, 0, sz*sizeof(float));
+    int r, c, sz, nw; uint8_t *dp_pos, *dp_neg; uint32_t* dp; std::vector<uint8_t> h_pos, h_neg; bool dirty;
+    CUDAMatrix(int rows, int cols) : r(rows), c(cols), sz(rows*cols), nw((rows*cols+15)/16), h_pos(rows*cols, 0), h_neg(rows*cols, 0), dirty(true) {
+        cudaMalloc(&dp_pos, sz); cudaMemset(dp_pos, 0, sz);
+        cudaMalloc(&dp_neg, sz); cudaMemset(dp_neg, 0, sz);
         cudaMalloc(&dp, nw*sizeof(uint32_t)); cudaMemset(dp, 0, nw*sizeof(uint32_t));
     }
-    ~CUDAMatrix() { if(d) cudaFree(d); if(dp) cudaFree(dp); }
+    ~CUDAMatrix() { if(dp_pos) cudaFree(dp_pos); if(dp_neg) cudaFree(dp_neg); if(dp) cudaFree(dp); }
+    void randomize(std::mt19937& gen, bool high_contrast = false) {
+        std::uniform_real_distribution<float> dist(0.1f, 0.4f); std::bernoulli_distribution coin(0.5);
+        for(int i=0; i<sz; i++) {
+            if (high_contrast) {
+                if(coin(gen)) { h_pos[i]=230; h_neg[i]=10; } else { h_pos[i]=10; h_neg[i]=230; }
+            } else { h_pos[i] = (uint8_t)(dist(gen)*255.0f); h_neg[i] = (uint8_t)(dist(gen)*255.0f); }
+        }
+        to_device();
+    }
+    void to_device() { cudaMemcpy(dp_pos, h_pos.data(), sz, cudaMemcpyHostToDevice); cudaMemcpy(dp_neg, h_neg.data(), sz, cudaMemcpyHostToDevice); dirty = true; }
+    void pack() { if(!dirty) return; kernel_pack_from_prob_fast<<<(nw+255)/256, 256>>>(dp_pos, dp_neg, dp, nw, sz); dirty = false; }
+};
+
+struct CUDABias {
+    int sz; float* d; std::vector<float> h;
+    CUDABias(int s) : sz(s), h(s, 0.0f) { cudaMalloc(&d, sz*sizeof(float)); cudaMemset(d, 0, sz*sizeof(float)); }
+    ~CUDABias() { if(d) cudaFree(d); }
     void randomize(std::mt19937& gen, float limit) {
         std::uniform_real_distribution<float> dist(-limit, limit);
-        for(float& v : h) v = dist(gen); to_device();
-    }
-    void to_device() { cudaMemcpy(d, h.data(), h.size()*sizeof(float), cudaMemcpyHostToDevice); dirty = true; }
-    void to_host() { cudaMemcpy(h.data(), d, h.size()*sizeof(float), cudaMemcpyDeviceToHost); }
-    void pack(float thr) {
-        if(!dirty) return;
-        kernel_pack_ternary_fast<<<(nw+255)/256, 256>>>(d, dp, nw, sz, thr);
-        dirty = false;
+        for(float& v : h) v = dist(gen); cudaMemcpy(d, h.data(), sz*sizeof(float), cudaMemcpyHostToDevice);
     }
 };
 
 class SovereignAbsoluteCore {
 public:
     int vs, hs, np; float thr;
-    CUDAMatrix Wz1, Wz2, Wr1, Wr2, Wh1, Wh2, bz, br, bh;
-    CUDAMatrix Whdc_l, Wg_l, by_l, Why_l, WB;
-    CUDAMatrix dX, dE, dZ, dR, dHT, dHDC, dH, dEXTR, dYP, dPROJ;
+    CUDAMatrix Wz1, Wz2, Wr1, Wr2, Wh1, Wh2, Whdc_l, Wg_l, Why_l, WB;
+    CUDABias bz, br, bh, by_l;
+    CUDABuffer dX, dE, dZ, dR, dHT, dHDC, dH, dEXTR, dYP, dPROJ;
     float* dGS;
 
     SovereignAbsoluteCore(int v, int h, int n, std::mt19937& gen)
         : vs(v), hs(h), np(n), thr(0.01f),
           Wz1(v, h), Wz2(v, h), Wr1(v, h), Wr2(v, h), Wh1(v, h), Wh2(v, h),
-          // NOTE: hs initialized before dHDC in declaration order
-          bz(1, h), br(1, h), bh(1, h),
-          Whdc_l(DIM, h), Wg_l(v, 1), by_l(1, v),
-          Why_l(h, v), WB(h, v),
-          dX(1, v), dE(1, v), dZ(1, h), dR(1, h), dHT(1, h), dHDC(1, hs), dH(1, h), dEXTR(1, DIM), dYP(1, v), dPROJ(1, h) {
-        
-        float s = (float)std::sqrt(1.0/h);
-        Wz1.randomize(gen, s); Wz2.randomize(gen, s*0.1f); Wr1.randomize(gen, s); Wr2.randomize(gen, s*0.1f);
-        Wh1.randomize(gen, s); Wh2.randomize(gen, s*0.1f); bz.randomize(gen, 0.1f); br.randomize(gen, 0.1f); 
-        bh.randomize(gen, 0.1f); by_l.randomize(gen, 0.1f); Whdc_l.randomize(gen, (float)std::sqrt(1.0/DIM)); 
-        Wg_l.randomize(gen, s); Why_l.randomize(gen, s); WB.randomize(gen, 1.0f);
+          Whdc_l(DIM, h), Wg_l(v, 1), Why_l(h, v), WB(h, v),
+          bz(h), br(h), bh(h), by_l(v),
+          dX(v), dE(v), dZ(h), dR(h), dHT(h), dHDC(h), dH(h), dEXTR(DIM), dYP(v), dPROJ(h) {
+        Wz1.randomize(gen); Wz2.randomize(gen); Wr1.randomize(gen); Wr2.randomize(gen); Wh1.randomize(gen); Wh2.randomize(gen);
+        Whdc_l.randomize(gen); Wg_l.randomize(gen); Why_l.randomize(gen); WB.randomize(gen, true); // High-Contrast Feedback
+        bz.randomize(gen, 0.1f); br.randomize(gen, 0.1f); bh.randomize(gen, 0.1f); by_l.randomize(gen, 0.1f);
         cudaMalloc(&dGS, sizeof(float));
     }
     ~SovereignAbsoluteCore() { cudaFree(dGS); }
 
     void prepare() {
-        Wz1.pack(thr); Wz2.pack(thr); Wr1.pack(thr); Wr2.pack(thr); Wh1.pack(thr); Wh2.pack(thr);
-        Why_l.pack(thr); Whdc_l.pack(thr); Wg_l.pack(thr);
+        Wz1.pack(); Wz2.pack(); Wr1.pack(); Wr2.pack(); Wh1.pack(); Wh2.pack();
+        Whdc_l.pack(); Wg_l.pack(); Why_l.pack(); WB.pack();
     }
 
     float train_absolute(const std::vector<int>& seq, const std::vector<std::vector<HDVector>>& signals, int target, float lr) {
-        prepare();
-        int tpb = 256; int blk_h = (hs + tpb - 1) / tpb;
+        prepare(); int tpb = 256; int blk_h = (hs + tpb - 1) / tpb;
         cudaMemset(dH.d, 0, hs*sizeof(float));
-
         for (int t = 0; t < (int)seq.size(); ++t) {
             dX.h.assign(vs, 0.0f); dX.h[seq[t]] = 1.0f; dX.to_device();
             std::vector<float> ex(DIM, 0.0f); for(int p=0; p<np; p++) for(int k=0; k<DIM; k++) ex[k] += (0.5f/np) * (float)signals[t][p][k];
             dEXTR.h = ex; dEXTR.to_device();
-            
             cudaMemcpy(dZ.d, bz.d, hs*sizeof(float), cudaMemcpyDeviceToDevice);
             cudaMemcpy(dR.d, br.d, hs*sizeof(float), cudaMemcpyDeviceToDevice);
             cudaMemcpy(dHT.d, bh.d, hs*sizeof(float), cudaMemcpyDeviceToDevice);
-            
             kernel_poly_matmul_vec_tiled_packed<<<blk_h, tpb, vs*sizeof(float)>>>(dX.d, Wz1.dp, Wz2.dp, dZ.d, vs, hs);
             kernel_poly_matmul_vec_tiled_packed<<<blk_h, tpb, vs*sizeof(float)>>>(dX.d, Wr1.dp, Wr2.dp, dR.d, vs, hs);
             kernel_poly_matmul_vec_tiled_packed<<<blk_h, tpb, vs*sizeof(float)>>>(dX.d, Wh1.dp, Wh2.dp, dHT.d, vs, hs);
-            
             kernel_sigmoid<<<blk_h, tpb>>>(dZ.d, hs); kernel_sigmoid<<<blk_h, tpb>>>(dR.d, hs);
             kernel_compute_gate_packed<<<1, 1>>>(dX.d, Wg_l.dp, -1.0f, dGS, vs);
             float conf; cudaMemcpy(&conf, dGS, sizeof(float), cudaMemcpyDeviceToHost);
             kernel_poly_hdc_tiled_packed<<<blk_h, tpb, DIM*sizeof(float)>>>(dEXTR.d, Whdc_l.dp, dHDC.d, DIM, hs, conf);
-            
-            kernel_matmult<<<blk_h, tpb>>>(dHDC.d, dR.d, hs); 
-            kernel_matadd<<<blk_h, tpb>>>(dHT.d, dHDC.d, hs);
+            kernel_matmult<<<blk_h, tpb>>>(dHDC.d, dR.d, hs); kernel_matadd<<<blk_h, tpb>>>(dHT.d, dHDC.d, hs);
             kernel_group_rmsnorm<<<blk_h, tpb, tpb*sizeof(float)>>>(dHT.d, hs); kernel_tanh<<<blk_h, tpb>>>(dHT.d, hs);
-            
             kernel_gru_blend<<<blk_h, tpb>>>(dH.d, dZ.d, dHT.d, hs);
         }
-
         kernel_output_projection_packed<<< (vs+tpb-1)/tpb, tpb >>>(dH.d, Why_l.dp, by_l.d, dYP.d, hs, vs);
         dYP.to_host(); float loss = 0; 
         for(int j=0; j<vs; j++) {
@@ -271,27 +307,19 @@ public:
             dE.h[j] = dYP.h[j] - t_j; loss += 0.5f * dE.h[j] * dE.h[j];
         }
         dE.to_device(); float clip = 0.05f;
-
-        kernel_dfa_projection<<<blk_h, tpb>>>(WB.d, dE.d, dPROJ.d, vs, hs);
-        
-        dim3 grd(blk_h, vs);
-        kernel_vectorized_dfa_update_dual<<<grd, tpb>>>(Wz1.d, Wz2.d, dX.d, dPROJ.d, dH.d, vs, hs, lr, clip);
-        kernel_vectorized_dfa_update_dual<<<grd, tpb>>>(Wr1.d, Wr2.d, dX.d, dPROJ.d, dH.d, vs, hs, lr, clip);
-        kernel_vectorized_dfa_update_dual<<<grd, tpb>>>(Wh1.d, Wh2.d, dX.d, dPROJ.d, dH.d, vs, hs, lr, clip);
-        
+        kernel_dfa_projection_packed<<<blk_h, tpb>>>(WB.dp, dE.d, dPROJ.d, vs, hs);
+        dim3 grd((vs+tpb-1)/tpb, hs);
+        kernel_prob_dfa_update_parallel_dual<<<grd, tpb>>>(Wz1.dp_pos, Wz1.dp_neg, Wz2.dp_pos, Wz2.dp_neg, dX.d, dPROJ.d, dH.d, vs, hs, lr, clip);
+        kernel_prob_dfa_update_parallel_dual<<<grd, tpb>>>(Wr1.dp_pos, Wr1.dp_neg, Wr2.dp_pos, Wr2.dp_neg, dX.d, dPROJ.d, dH.d, vs, hs, lr, clip);
+        kernel_prob_dfa_update_parallel_dual<<<grd, tpb>>>(Wh1.dp_pos, Wh1.dp_neg, Wh2.dp_pos, Wh2.dp_neg, dX.d, dPROJ.d, dH.d, vs, hs, lr, clip);
         kernel_bias_dfa_update<<<blk_h, tpb>>>(bz.d, dPROJ.d, dH.d, hs, lr, clip);
         kernel_bias_dfa_update<<<blk_h, tpb>>>(br.d, dPROJ.d, dH.d, hs, lr, clip);
         kernel_bias_dfa_update<<<blk_h, tpb>>>(bh.d, dPROJ.d, dH.d, hs, lr, clip);
-        
-        kernel_vectorized_dfa_update_single<<<dim3(blk_h, DIM), tpb>>>(Whdc_l.d, dEXTR.d, dPROJ.d, dH.d, DIM, hs, lr, clip);
-        kernel_vectorized_dfa_update_single<<<dim3(blk_h, vs), tpb>>>(Wg_l.d, dX.d, dPROJ.d, dH.d, vs, hs, lr, clip);
-        
-        dim3 grd_out((vs+tpb-1)/tpb, hs);
-        kernel_output_dfa_update_parallel<<< grd_out, tpb >>>(Why_l.d, by_l.d, dH.d, dE.d, hs, vs, lr, clip);
-        
+        kernel_prob_dfa_update_parallel_single<<<dim3((DIM+tpb-1)/tpb, hs), tpb>>>(Whdc_l.dp_pos, Whdc_l.dp_neg, dEXTR.d, dPROJ.d, dH.d, DIM, hs, lr, clip);
+        kernel_prob_dfa_update_parallel_single<<<dim3((vs+tpb-1)/tpb, hs), tpb>>>(Wg_l.dp_pos, Wg_l.dp_neg, dX.d, dPROJ.d, dH.d, vs, hs, lr, clip);
+        kernel_prob_output_dfa_update<<<dim3((vs+tpb-1)/tpb, hs), tpb>>>(Why_l.dp_pos, Why_l.dp_neg, by_l.d, dH.d, dE.d, hs, vs, lr, clip);
         Wz1.dirty = Wz2.dirty = Wr1.dirty = Wr2.dirty = Wh1.dirty = Wh2.dirty = true;
         Why_l.dirty = Whdc_l.dirty = Wg_l.dirty = true;
-        
         cudaDeviceSynchronize(); return loss / vs;
     }
 };
@@ -301,8 +329,8 @@ HDVector prm(const HDVector& a, int s=1) { HDVector v(DIM); for(int i=0; i<DIM; 
 
 int main() {
     std::cout << "==========================================================\n";
-    std::cout << "[SYSTEM]: SOVEREIGN THREAD-SAFE STABILITY (v5.0)\n";
-    std::cout << "[SYSTEM]: 100% SILICON GRU CORE | 1024-HIDDEN UNITS\n";
+    std::cout << "[SYSTEM]: SOVEREIGN UNIFIED MANIFOLD (v5.2)\n";
+    std::cout << "[SYSTEM]: 100% PROBABILISTIC CORE | 1024-HIDDEN UNITS\n";
     std::cout << "==========================================================\n";
     std::string data = "SOVEREIGN_THREAD_SAFE_STABILITY_v5.0_REAL_WORLD_BENCHMARK_SCALING_NOW_ACTIVE_"; std::mt19937 gen(42);
     std::map<char, HDVector> itm; for(char c : data) if(!itm.count(c)) {
@@ -326,6 +354,6 @@ int main() {
         if(eng.thr > 0.03f && lr > 0.01f) lr = 0.01f; if(eng.thr > 0.045f && lr > 0.001f) lr = 0.001f;
         if(epoch % 10 == 0 || epoch == 49) std::cout << "Epoch " << epoch+1 << " | Absolute Loss: " << (total_l/n) << " | Thresh: " << eng.thr << "\n";
     }
-    std::cout << "\n[SUCCESS]: Sovereign v4.9 Quantum Scale Complete.\n";
+    std::cout << "\n[SUCCESS]: Sovereign v5.2 Unified Manifold Complete.\n";
     return 0;
 }
