@@ -20,7 +20,7 @@ using HDVector = std::vector<int>;
 }
 
 // ==========================================
-// SOVEREIGN UNIFIED CORE (v5.2)
+// NEURO-SYMBOLIC UNIFIED CORE (v1.0)
 // SCALE: 7B-READY | MEMORY: BAYESIAN-PURE
 // ==========================================
 
@@ -253,7 +253,7 @@ struct CUDABias {
     }
 };
 
-class SovereignAbsoluteCore {
+class NeuroSymbolicCore {
 public:
     int vs, hs, np; float thr;
     CUDAMatrix Wz1, Wz2, Wr1, Wr2, Wh1, Wh2, Whdc_l, Wg_l, Why_l, WB;
@@ -261,7 +261,7 @@ public:
     CUDABuffer dX, dE, dZ, dR, dHT, dHDC, dH, dEXTR, dYP, dPROJ;
     float* dGS;
 
-    SovereignAbsoluteCore(int v, int h, int n, std::mt19937& gen)
+    NeuroSymbolicCore(int v, int h, int n, std::mt19937& gen)
         : vs(v), hs(h), np(n), thr(0.01f),
           Wz1(v, h), Wz2(v, h), Wr1(v, h), Wr2(v, h), Wh1(v, h), Wh2(v, h),
           Whdc_l(DIM, h), Wg_l(v, 1), Why_l(h, v), WB(h, v),
@@ -329,10 +329,10 @@ HDVector prm(const HDVector& a, int s=1) { HDVector v(DIM); for(int i=0; i<DIM; 
 
 int main() {
     std::cout << "==========================================================\n";
-    std::cout << "[SYSTEM]: SOVEREIGN UNIFIED MANIFOLD (v5.2)\n";
+    std::cout << "[SYSTEM]: NEURO-SYMBOLIC UNIFIED CORE (v1.0)\n";
     std::cout << "[SYSTEM]: 100% PROBABILISTIC CORE | 1024-HIDDEN UNITS\n";
     std::cout << "==========================================================\n";
-    std::string data = "SOVEREIGN_THREAD_SAFE_STABILITY_v5.0_REAL_WORLD_BENCHMARK_SCALING_NOW_ACTIVE_"; std::mt19937 gen(42);
+    std::string data = "NEURO_SYMBOLIC_CORE_STABILITY_v1.0_PROBABILISTIC_SCALING_ACTIVE_"; std::mt19937 gen(42);
     std::map<char, HDVector> itm; for(char c : data) if(!itm.count(c)) {
         HDVector v(DIM); std::uniform_int_distribution<> d(0,1); for(int i=0; i<DIM; i++) v[i]=(d(gen)?1:-1); itm[c]=v;
     }
@@ -346,7 +346,7 @@ int main() {
         r_in.push_back(t_seq); h_in.push_back(h_seq); r_t.push_back(tokens[i+10]);
     }
 
-    SovereignAbsoluteCore eng(vs, 1024, 1, gen); float lr = 0.05f;
+    NeuroSymbolicCore eng(vs, 1024, 1, gen); float lr = 0.05f;
     for(int epoch=0; epoch<50; ++epoch) {
         float total_l = 0; int n = r_in.size();
         for(int i=0; i<n; i++) total_l += eng.train_absolute(r_in[i], h_in[i], r_t[i], lr);
@@ -354,6 +354,6 @@ int main() {
         if(eng.thr > 0.03f && lr > 0.01f) lr = 0.01f; if(eng.thr > 0.045f && lr > 0.001f) lr = 0.001f;
         if(epoch % 10 == 0 || epoch == 49) std::cout << "Epoch " << epoch+1 << " | Absolute Loss: " << (total_l/n) << " | Thresh: " << eng.thr << "\n";
     }
-    std::cout << "\n[SUCCESS]: Sovereign v5.2 Unified Manifold Complete.\n";
+    std::cout << "\n[SUCCESS]: Neuro-Symbolic Core Unified Complete.\n";
     return 0;
 }

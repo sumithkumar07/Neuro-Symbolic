@@ -53,9 +53,9 @@ These rules override everything else. If we break them, we go back.
 - **Result**: Implemented Dynamic Shared Memory Tiling in core kernels.
 - **Metric**: Global memory IO overhead reduced; numerical integrity maintained.
 
-#### Phase 32: Sovereign Bit-Packing (v4.7)
+#### Phase 32: Neuro-Symbolic Bit-Packing (v4.7)
 - **Status**: VERIFIED
-- **Result**: Implemented 2rd-bit Ternary Weight Packing (16 weights/uint32_t).
+- **Result**: Implemented 2-bit Ternary Weight Packing (16 weights/uint32_t).
 - **Metric**: 32x Memory Efficiency achieved; Convergence Loss reached 0.0015.
 
 #### Phase 35: Thread-Safe Stability (v5.0)
@@ -63,9 +63,9 @@ These rules override everything else. If we break them, we go back.
 - **Result**: Implemented Shared-Memory Synchronized Group RMSNorm.
 - **Metric**: Warp-boundary race conditions eliminated; Deterministic 1024-unit convergence verified at Loss 2.84.
 
-**The Sovereign Core is now formally BAYESIAN-PURE and 7B-READY.**
+**The Neuro-Symbolic Core is now formally BAYESIAN-PURE and 7B-READY.**
 
-#### Phase 37: Unified Probabilistic Manifold (v5.2)
+#### Phase 37: Neuro-Symbolic Core (v1.0)
 - **Status**: VERIFIED
 - **Result**: Implemented 100% Bayesian 8-bit weight consistency and synced weight indexing.
-- **Metric**: Achieved 2x latent VRAM savings (Unified 2-byte training); Near-perfect convergence (Loss 0.012) verified on 1024-unit manifold.
+- **Metric**: Achieved 2x latent VRAM savings (Unified 2-byte training); Near-perfect convergence (Loss 0.012) verified on 1024-unit core.

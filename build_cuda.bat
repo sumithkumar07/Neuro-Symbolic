@@ -14,13 +14,13 @@ if "%VCVARS%"=="" (
     exit /b 1
 )
 call "%VCVARS%" x64
-echo Building Sovereign GPU Architecture Matrix...
-nvcc Sovereign_Final_Architecture.cu -o Sovereign_CUDA.exe -O3 -allow-unsupported-compiler -std=c++17
+echo Building Neuro-Symbolic GPU Core...
+nvcc neuro_symbolic_core.cu -o bin\neuro_symbolic.exe -O3 -allow-unsupported-compiler -std=c++17
 if %errorlevel% neq 0 (
     echo Compilation failed.
     exit /b %errorlevel%
 )
 echo Build Completed.
 echo.
-echo === RUNNING PHASE 16 CUDA NATIVE ===
-Sovereign_CUDA.exe
+echo === RUNNING NEURO-SYMBOLIC CORE ===
+bin\neuro_symbolic.exe
