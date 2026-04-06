@@ -272,7 +272,7 @@ public:
         bz.randomize(gen, 0.1f); br.randomize(gen, 0.1f); bh.randomize(gen, 0.1f); by_l.randomize(gen, 0.1f);
         cudaMalloc(&dGS, sizeof(float));
     }
-    ~SovereignAbsoluteCore() { cudaFree(dGS); }
+    ~NeuroSymbolicCore() { cudaFree(dGS); }
 
     void prepare() {
         Wz1.pack(); Wz2.pack(); Wr1.pack(); Wr2.pack(); Wh1.pack(); Wh2.pack();
