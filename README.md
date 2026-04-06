@@ -1,6 +1,6 @@
 # Sovereign Engine v4.6: The Sovereign Absolute
 
-The **Sovereign Neuro-Symbolic Engine** is a high-performance, autonomous AGI architecture built from the ground up to operate at the intersection of deep sequence modeling and symbolic logic. 
+The **Sovereign Neuro-Symbolic Engine** is a high-performance, autonomous architecture built from the ground up to operate at the intersection of deep sequence modeling and symbolic logic. 
 
 **v4.6 (The Sovereign Absolute)** represents the transition to a pure silicon state: 100% GPU-resident sequence learning with zero host-to-device bottlenecks and autonomous parameter adaptation.
 
